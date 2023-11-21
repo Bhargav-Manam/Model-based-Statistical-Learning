@@ -1,0 +1,278 @@
+---
+title: "Takehome_GMM_MSc"
+author: "Bhargav Ramudu Manam"
+date: "2022-11-15"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+# 1) Implementation of EM algorithm for a Multi-Variate GMM (specifically on two chosen variables):
+
+## Data Overview:
+    First, let us check out the data at hand.
+
+```{r}
+# Importing required libraries and Source file
+library(pgmm)
+library("mvtnorm")
+library("mclust")
+source("useful_functions.R")
+
+# Importing Data Set and plotting the Data representation w.r.t 2 nd and 4 th Variables
+data(wine)
+X <- wine[, c(2, 4)]
+y <- wine[, 1]
+plot(X, col = y)
+```
+    From the above plot it is clear that our data has three classes. Now, Let us build an EM-Algorithm from scratch and verify if our EM Algorithm can suggest 3 classes for our unknown (let's assume) clustering (un-supervised) problem.
+
+## EM Algorithm from scratch
+
+    First let us code a general EM algorithm for a Multi-variate GMM and then apply it to the 2 and 4 variables of the wine data set.
+
+Let's remind that the equations for the E and M steps are as follows:
+
+-   E step: Calculating the responsibilities or posterior probabilities (Expectation Step)
+  - $$t_{ik} = E[y_{ik}|\theta^*,X] \propto \pi^*_k \mathcal{N}(x_i;\mu^*_k,\Sigma^{2*}_k)$$ and $t_{ik} \in [0,1]$.
+
+-   M step: Expectation Maximization through iteratively updating the model parameters.
+  - we optimize $Q(\theta,\theta^*)$ (complete Log-Likelihood) to get the updated parameters:
+
+      -   $\pi^{*}_k = \sum_{i=1}^n t_{ik} / n$,
+      -   $\mu^{*}_k = \frac{1}{n_k}\sum_{i=1}^n t_{ik} * x_i$,
+      -   $\Sigma^{*}_k = \frac{1}{n_k}\sum_{i=1}^n t_{ik} * (x_i - \mu_k) * (x_i - \mu_k)^{T}$, where $n_k = \sum_{i=1}^n t_{ik}$.
+
+```{r}
+EM_MV_GMM <- function(X, K, maxit = 100, ...) {
+  n_variables <- ncol(X)
+  comp_Lik <- rep(0, maxit) # Complete Log-Likelihood Initialization
+  n_obs <- nrow(X)
+  T <- matrix(NA, nrow = n_obs, ncol = K) # Responsiibilities initializtion
+  # Initialization of \theta
+  prop <- rep(1 / K, K)
+  mu <- rmvnorm(K, colMeans(X), cov(X)) # Random intialization
+  sigma <- array(cov(X), dim = c(n_variables, n_variables, K))
+  # The main loop of the EM algo
+  for (it in 1:maxit) {
+    # The E-step per iteration
+    # Evaluating responsibilities per each cluster
+    for (k in 1:K) {
+      l_g_d <- log_gaussian_density(X, mean = mu[k,], sigma = sigma[, , k])
+      T[, k] <- log(prop[k]) + l_g_d
+    }
+    T <- T / rowSums(T) %*% matrix(1, nrow = 1, ncol = K) # normalizing
+
+    # The M-step per iteration
+    # Evaluating model parameters
+    for (k in 1:K) {
+      nk <- sum(T[, k])
+      prop[k] <- nk / n_obs
+      mu[k,] <- colSums(T[, k] * X) / nk
+      mu_res <- mu[k,] %x% rep(1, n_obs)
+      diff <- as.matrix(X - mu_res)
+      cov <- matrix(rep(0, n_variables * n_variables), nrow = n_variables, ncol = n_variables)
+      for (obs in 1:n_obs) {
+        cov <- cov + T[obs, k] * (diff[obs,] %*% t(diff[obs,]))
+      }
+      sigma[, , k] <- cov / nk
+    }
+    # Assigning cluster to each observation
+    grp <- max.col(T)
+
+    # Likelihood evaluation
+    for (k in 1:K) {
+      l_g_d <- log_gaussian_density(X, mean = mu[k,], sigma = sigma[, , k])
+      log_propk_norm <- log(prop[k]) + l_g_d
+      mlt <- T[, k] * log_propk_norm
+      sums <- sum(mlt)
+      comp_Lik[it] <- comp_Lik[it] + sums
+    }
+  }
+  # Returning the results
+  list(prop = prop, mu = mu, sigma = sigma, T = T, grp = grp,
+       comp_Lik = comp_Lik)
+}
+```
+
+## EM Algorithm Clustering Plot
+
+  - The EM algorithm coded above can support any generic dataset with multiple variables and can be analysed for any number of clusters.
+  - Let us now apply our EM algorithm to the wine data set, for variables 2 and 4.
+
+### EM with 3 clusters
+```{r}
+# EM clustering plot
+em_output <- EM_MV_GMM (X, 3)
+plot(X[,1],X[,2],col=em_output$grp)
+```
+```{r}
+# Means of the clusters
+em_output$mu
+```
+```{r}
+# Complete Log-Likelihood evolution with EM iterations
+plot(em_output$comp_Lik)
+```
+```{r}
+# Class probabilities
+em_output$T
+```
+From the above plots and data outputs, it is clear that my custom EM Algorithm is not very good at clustering the given data. All the clusters converged to same mean and there is no improvement in Likelihood as well. This maybe due to the algorithm optimization stuck at local minima or poor choice of parameter initialization (even though I choose mean's at random). Let us enquire EM for 4 cluster and check results again.
+
+### EM with 4 clusters
+```{r}
+# EM clustering plot
+em_output <- EM_MV_GMM (X, 4)
+plot(X[,1],X[,2],col=em_output$grp)
+```
+```{r}
+# Means of the clusters
+em_output$mu
+```
+```{r}
+# Complete Log-Likelihood evolution with EM iterations
+plot(em_output$comp_Lik)
+```
+We observe the same behaviour in my custom EM algorithm. Hence, there must be something wrong with my algorithm. But for the purpose of analysis with the Exam, I continue with the EM algorithm from Mclust Library.
+
+# Comparing EM with K-Means
+
+## Plotting EM with 3 Clusters
+```{r}
+em_output <- Mclust(X, 3)
+plot(X[, 1], X[, 2], col = em_output$classification, xlab = colnames(X[1]), ylab = colnames(X[2]))
+points(em_output$parameters$mean[1,], em_output$parameters$mean[2,], col = 'black', pch = 19)
+```
+## Plotting K-Means with 3 Clusters
+```{r}
+km <- kmeans(X, 3)
+```
+```{r}
+plot(X[, 1], X[, 2], col = km$cluster, xlab = colnames(X[1]), ylab = colnames(X[2]))
+points(km$centers[, 1], km$centers[, 2], col = 'black', pch = 19)
+```
+## Quality of the clustering (Using Classification Error)
+
+```{r}
+ceem <- classError(em_output$classification, wine[, 1])
+cek <- classError(km$cluster, wine[, 1])
+cat("Classification error for EM is ", ceem$errorRate," and for K-means is",cek$errorRate,'\n')
+```
+The error for K-means is higher than that of EM algorithm. This suggests that EM is generally more robust than K-means. This is due to the compact decision boundaries and flexibility of EM algorithm. Whereas K-means is based on simple assuumptions and decision boundaries are circular.
+
+However, K-means can be used as a reference model to get a rough estimate since they are computationally inexpensive. It should be noted that sometimes, EM algorithm takes too long to converge or gets stuck at local minima (like it happended to my algorithm)
+
+# 2) Model selection:
+- Try to find a relevant number of clusters using at least three methods among the ones seen in class: AIC, BIC, ICL, and (cross-)validated likelihood.
+
+## I will be using the following penalized model selection criteria's:
+- AIC
+- BIC
+- ICL
+
+We will evaluate the best models based on these criteria's defined below by plotting the penalized log-likelihood of our training data (for a constant set of features) with increasing no. of clusters.
+
+```{r}
+get_free_params <- function(X, k) {
+  (k - 1) + k * ncol(X) + (k * ncol(X) * (ncol(X) + 1) / 2)
+}
+
+aic <- function(X, k) {
+  Mclust(X, k)$loglik - get_free_params(X, k)
+}
+
+bic <- function(X, k) {
+  Mclust(X, k)$loglik - (get_free_params(X, k) / 2) * log(nrow(X))
+}
+
+icl <- function(X, k) {
+  T <- Mclust(X, k)$z
+  bic(X, k) - (sum(T * log(T)) / 2)
+}
+
+aic_crit <- c()
+bic_crit <- c()
+icl_crit <- c()
+clusters <- c(1:10)
+for (k in clusters) {
+  aic_crit <- append(aic_crit, aic(X, k))
+  bic_crit <- append(bic_crit, bic(X, k))
+  icl_crit <- append(icl_crit, icl(X, k))
+}
+
+
+
+plot(clusters, aic_crit, type = "l", pch = 19, ylim = c(-1100, -950), col = "blue", ylab = "method value")
+lines(clusters, bic_crit, type = "l", pch = 19, col = "green")
+lines(clusters, icl_crit, type = "l", pch = 19, col = "orange")
+legend(x = 2, y = -1050, legend = c('aic', 'bic', 'icl'), col = c("blue", "green", "orange"), lty = 1, lwd = 1,)
+
+```
+The criterion's AIC and ICL are found to be optimum over BIC as they suggest that
+the no. of clusters to be 3 (corresponding to maximum likelihood), which mathches with the truth from the given data (3 classes present in Wine data).
+
+
+# 3) Towards higher dimensional spaces
+
+* Try to model more than just two variables of the same data set. Do you find the same clusters?
+
+### Now let us check how the EM algorithm behaves in higher dimensions.
+
+```{r}
+features3 <- wine[, c(2,3,4)]
+features4 <- wine[, c(2,3,4,5)]
+features5 <- wine[, c(2,3,4,5,6)]
+labels <- wine[, 1]
+X_features <- c(features3, features4, features5)
+
+
+mls <- matrix(NA,nrow = 4, ncol = 3)
+for (k in (1:4)) {
+
+  em_result <- Mclust(features3, k)
+  class_error <- classError(em_result$classification, labels)$errorRate
+  max_log_lik <- em_result$loglik
+  cat('3 features ', k,"clusters ", "classification eror ",class_error, 'maximum log-likelihood',max_log_lik)
+  title <- paste(c(3, "features", k, "clusters"), collapse = " ")
+  pairs(X, lower.panel = NULL, col = em_result$classification, main = title)
+  max_log_lik3 <- em_result$loglik
+
+
+    em_result <- Mclust(features4, k)
+  class_error <- classError(em_result$classification, labels)$errorRate
+  max_log_lik <- em_result$loglik
+  cat('3 features ', k,"clusters ", "classification eror ",class_error, 'maximum log-likelihood',max_log_lik)
+  title <- paste(c(3, "features", k, "clusters"), collapse = " ")
+  pairs(X, lower.panel = NULL, col = em_result$classification, main = title)
+  max_log_lik4 <- em_result$loglik
+
+    em_result <- Mclust(features5, k)
+  class_error <- classError(em_result$classification, labels)$errorRate
+  max_log_lik <- em_result$loglik
+  cat('3 features ', k,"clusters ", "classification eror ",class_error, 'maximum log-likelihood',max_log_lik)
+  title <- paste(c(3, "features", k, "clusters"), collapse = " ")
+  pairs(X, lower.panel = NULL, col = em_result$classification, main = title)
+  max_log_lik5 <- em_result$loglik
+
+  mls[k,] <- c(max_log_lik3,max_log_lik4,max_log_lik5)
+
+
+
+
+}
+
+
+```
+
+```{r}
+plot(c(1,2,3,4),mls[,1],  type = "l", pch = 19, ylim = c(-1700, -420), ylab = "Max. Log-likelihood", xlab="Clusters", col = "blue")
+lines(c(1,2,3,4),mls[,2],  type = "l", pch = 19, col = "green")
+lines(c(1,2,3,4),mls[,3],  type = "l", pch = 19, col = "orange")
+
+legend(x = 1, y = -400, legend = c('3 features', '4 features', '5 features'), col = c("blue", "green", "orange"), lty = 1, lwd = 1,)
+```
+- As you can see from the plot, at higher dimensions our best model suggests that the optimal no. of clusters is 4 or even higher(which is deviating from the truth of 3 clusters). This suggests that the extra information acquired from new dimensions is redundant or has too much correlation, thereby behaving more like a noise.
+
+- Therefore, this kind of analysis can give us an idea about how much data we might need to collect for optimal analysis (and avoiding over data collection and saving costs and time).
